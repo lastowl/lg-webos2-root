@@ -77,6 +77,7 @@ $SCP_CMD "$BIN_DIR/towelroot" "prisoner@$TV_IP:/media/developer/persist/towelroo
 $SCP_CMD "$BIN_DIR/rootsh" "prisoner@$TV_IP:/media/developer/persist/rootsh"
 $SCP_CMD "$BIN_DIR/dotrigger" "prisoner@$TV_IP:/media/developer/persist/dotrigger"
 $SCP_CMD "$SCRIPT_DIR/ssh_wrapper.sh" "prisoner@$TV_IP:/media/developer/persist/ssh_wrapper.sh"
+$SCP_CMD "$SCRIPT_DIR/boot-root.sh" "prisoner@$TV_IP:/media/developer/persist/boot-root.sh"
 $SCP_CMD "$SCRIPT_DIR/install.sh" "prisoner@$TV_IP:/media/developer/persist/install.sh"
 echo "[+] Files uploaded"
 

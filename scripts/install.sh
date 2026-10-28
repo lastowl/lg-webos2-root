@@ -61,10 +61,80 @@ else
     exit 1
 fi
 
+# --- Root SSH server setup ---
+
+echo "[*] Setting up root SSH server on port 22..."
+
+# Generate persistent host key if needed
+if [ ! -f "$PERSIST_DIR/ssh_host_rsa_key" ]; then
+    /opt/openssh/bin/ssh-keygen -q -f "$PERSIST_DIR/ssh_host_rsa_key" -N "" -t rsa
+    echo "[+] Generated SSH host key"
+else
+    echo "[*] SSH host key already exists"
+fi
+chmod 600 "$PERSIST_DIR/ssh_host_rsa_key"
+
+# Install the same public key for root login
+PUBKEY=$(sed 's/^command="[^"]*" //' "$AUTH_KEYS")
+mkdir -p /home/root/.ssh
+chmod 700 /home/root/.ssh
+echo "$PUBKEY" > /home/root/.ssh/authorized_keys
+chmod 644 /home/root/.ssh/authorized_keys
+echo "[+] Root authorized_keys installed"
+
+# Patch start-devmode.sh to run autoroot + root sshd at boot
+DEVMODE_SCRIPT="/media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/start-devmode.sh"
+if [ -f "$DEVMODE_SCRIPT" ]; then
+    if grep -q "boot-root" "$DEVMODE_SCRIPT"; then
+        echo "[*] start-devmode.sh already patched"
+    elif grep -q "^# === AUTOROOT" "$DEVMODE_SCRIPT"; then
+        echo "[*] start-devmode.sh has AUTOROOT block, updating..."
+        sed -i "/^# === AUTOROOT/,/^# === END AUTOROOT/c\\
+# === AUTOROOT: run towelroot exploit at boot ===\\
+if [ -x /media/developer/persist/towelroot ] && [ ! -f /tmp/rooted ]; then\\
+    (\\
+        cp /media/developer/persist/rootsh /tmp/rootsh\\
+        chmod 755 /tmp/rootsh\\
+        cp /media/developer/persist/dotrigger /tmp/dotrigger\\
+        chmod 755 /tmp/dotrigger\\
+        /media/developer/persist/towelroot > /tmp/autoroot.log 2>\&1 \&\\
+    ) \&\\
+    /media/developer/persist/boot-root.sh \&\\
+fi\\
+# === END AUTOROOT ===" "$DEVMODE_SCRIPT"
+        echo "[+] start-devmode.sh patched with autoroot + root sshd"
+    else
+        echo "[*] Injecting AUTOROOT block into start-devmode.sh..."
+        cp "$DEVMODE_SCRIPT" "$DEVMODE_SCRIPT.bak"
+        sed -i '/^export LD_LIBRARY_PATH=/a\
+\
+# === AUTOROOT: run towelroot exploit at boot ===\
+if [ -x /media/developer/persist/towelroot ] && [ ! -f /tmp/rooted ]; then\
+    (\
+        cp /media/developer/persist/rootsh /tmp/rootsh\
+        chmod 755 /tmp/rootsh\
+        cp /media/developer/persist/dotrigger /tmp/dotrigger\
+        chmod 755 /tmp/dotrigger\
+        /media/developer/persist/towelroot > /tmp/autoroot.log 2>\&1 \&\
+    ) \&\
+    /media/developer/persist/boot-root.sh \&\
+fi\
+# === END AUTOROOT ===' "$DEVMODE_SCRIPT"
+        echo "[+] start-devmode.sh patched (backup at .bak)"
+    fi
+else
+    echo "[-] start-devmode.sh not found, skipping boot hook"
+fi
+
 echo
 echo "=== Installation complete ==="
-echo "After reboot, root activates on first SSH connection (~5-8s)."
-echo "Use '/tmp/rootsh -c <cmd>' for root commands."
 echo
-echo "To test: reboot the TV, SSH in, wait a few seconds, then run:"
-echo "  /tmp/rootsh -c id"
+echo "Root persistence:"
+echo "  - Exploit runs automatically at boot via start-devmode.sh"
+echo "  - Root SSH available on port 22 (~30-60s after boot)"
+echo "  - Fallback: exploit also runs on prisoner SSH connect"
+echo
+echo "Usage:"
+echo "  ssh -p 22 root@<tv-ip>                   # direct root SSH"
+echo "  ssh -p 9922 prisoner@<tv-ip>              # prisoner (triggers root if needed)"
+echo "  /tmp/rootsh -c 'command'                   # run as root from prisoner shell"

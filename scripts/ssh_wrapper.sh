@@ -21,6 +21,11 @@ if [ ! -f /tmp/rooted ] && [ -x "$PERSIST_DIR/towelroot" ]; then
     fi
 fi
 
+# If already rooted, ensure root sshd is running on port 22
+if [ -f /tmp/rooted ] && [ -u /tmp/rootsh ] && [ -x "$PERSIST_DIR/boot-root.sh" ]; then
+    /tmp/rootsh -c "$PERSIST_DIR/boot-root.sh" 2>/dev/null &
+fi
+
 if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
     exec /bin/sh -c "$SSH_ORIGINAL_COMMAND"
 else

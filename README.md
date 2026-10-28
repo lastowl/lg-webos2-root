@@ -8,7 +8,7 @@ Targets ARM 32-bit webOS builds running kernel 3.10.x before the futex requeue b
 
 1. **Exploit** — Uses the futex requeue bug (CVE-2014-3153, aka towelroot) to expand the current thread's `addr_limit`, then overwrites `modprobe_path` via pipe read/write to point at a helper script. Triggering modprobe on an unknown binary format runs the script as root, which sets up a SUID root shell at `/tmp/rootsh`.
 
-2. **Boot persistence** — Hooks into the devmode jail configuration (`jail_app.conf`) via a `system` command that runs on the host as root during jail setup. A self-patching script (`autoroot-boot.sh`) runs the exploit at boot, starts root sshd and RPiPlay, then re-patches `jail_app.conf` after `start-devmode.sh` overwrites it with the clean template — creating a self-sustaining cycle across reboots. Root SSH is typically available 30-60 seconds after power-on.
+2. **Boot persistence** — Patches `start-devmode.sh` (the devmode service startup script on the writable `/media` partition) to launch `autoroot-boot.sh` early in the boot process. The devmode upstart job fires on `minimal-boot-done`, which runs before `appinstalld` starts. The autoroot script runs the exploit, starts root sshd and RPiPlay, then monitors `start-devmode.sh` in the background — if `appinstalld` ever re-extracts the original (e.g. after a firmware update), the patch is re-applied automatically for the next boot. Root SSH is typically available 30-60 seconds after power-on.
 
 3. **SSH fallback** — Patches `authorized_keys` with a `command=` directive that runs a wrapper script on every prisoner SSH connection. If root isn't active yet, the wrapper launches the exploit in the background and also starts the root sshd once it succeeds. `authorized_keys` survives reboots because `start-devmode.sh` only creates it when it doesn't exist.
 
@@ -44,7 +44,7 @@ Binaries are output to `build/`.
 The deploy script:
 1. Uploads binaries to `/media/developer/persist/`
 2. Runs the exploit to get initial root
-3. Installs the persistence hook in `authorized_keys`
+3. Installs the persistence hook in `start-devmode.sh` and `authorized_keys`
 
 ### After reboot
 
@@ -95,12 +95,13 @@ The third field is the memory split: `2` if the kernel base (`stext`) is near `0
 ├── towelroot          # The exploit binary
 ├── rootsh             # SUID root shell (copied to /tmp at boot)
 ├── dotrigger          # modprobe trigger helper
-├── autoroot-boot.sh   # Boot-time autoroot: exploit + sshd + jail_app.conf re-patch
+├── autoroot-boot.sh   # Boot-time autoroot: exploit + sshd + start-devmode.sh re-patch
 ├── boot-root.sh       # Starts root sshd on port 22 and RPiPlay after exploit
 ├── ssh_wrapper.sh     # authorized_keys command wrapper (SSH fallback)
 └── ssh_host_rsa_key   # Persistent SSH host key for root sshd
 
-/media/developer/jail_app.conf  # Patched with system command to trigger autoroot
+/media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/
+└── start-devmode.sh   # Patched with early hook to launch autoroot
 
 /media/developer/.ssh/
 └── authorized_keys    # Patched with command= for persistence
@@ -117,6 +118,9 @@ To remove root persistence:
 # From the TV (with root):
 /tmp/rootsh -c "cp /media/developer/.ssh/authorized_keys.bak /media/developer/.ssh/authorized_keys"
 
+# Restore original start-devmode.sh:
+/tmp/rootsh -c "cp /media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/start-devmode.sh.orig /media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/start-devmode.sh"
+
 # Or delete authorized_keys entirely (it regenerates on next reboot):
 /tmp/rootsh -c "rm /media/developer/.ssh/authorized_keys"
 ```
@@ -125,9 +129,11 @@ To remove root persistence:
 
 ### Why this persistence method?
 
-On webOS 2.x, most boot files come from a read-only squashfs root. The devmode service runs inside a jail, and `start-devmode.sh` overwrites `jail_app.conf` at every boot with a clean template from the jail's internal `download/` directory. However, the jailer reads `jail_app.conf` *before* that overwrite happens, and `system` commands in the conf run on the host as root during jail setup.
+On webOS 2.x, the root filesystem is a read-only squashfs image — there is no writable overlay. Writable storage is limited to `/var` (mmcblk0p46), `/home` (mmcblk0p46), and `/media` (mmcblk0p47), which are separate ext4 partitions bind-mounted over the squashfs root.
 
-The installer patches `jail_app.conf` with a `system` command that launches `autoroot-boot.sh`. This script runs the exploit, starts root sshd, and then — after a delay — re-patches `jail_app.conf` (which `start-devmode.sh` has since overwritten with the clean version). This creates a self-sustaining cycle: each boot reads the patched conf, runs autoroot, and re-patches for the next boot.
+The devmode upstart job (`devmode.conf`) fires on `minimal-boot-done` and runs `start-devmode.sh`, which lives on the writable `/media` partition at `/media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/`. This script runs early in the boot sequence — before `appinstalld` starts (which fires on the later `rest-boot-done` event). Patching `start-devmode.sh` with a hook near the top gives us code execution as root during boot.
+
+The `appinstalld` daemon *can* re-extract `start-devmode.sh` from the devmode service IPK (e.g. after a firmware update or app reinstall), which would remove our patch. To handle this, `autoroot-boot.sh` spawns a background watcher that monitors `start-devmode.sh` for 10 minutes after boot — if the hook marker disappears (indicating re-extraction), the watcher re-applies the patch automatically.
 
 The `authorized_keys` file also persists — it is only created when it doesn't exist (`if [ ! -e ... ]` guard in `start-devmode.sh`). The wrapper hook there serves as a fallback if the boot-time autoroot didn't fire.
 

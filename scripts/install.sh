@@ -1,6 +1,6 @@
 #!/bin/sh
 # install.sh - Run ON the TV (as prisoner with /tmp/rootsh available)
-# Sets up persistent root: copies binaries, patches authorized_keys.
+# Sets up persistent root: copies binaries, patches authorized_keys and jail_app.conf.
 #
 # Usage: /tmp/rootsh -c "sh /media/developer/persist/install.sh"
 
@@ -9,6 +9,7 @@ set -e
 PERSIST_DIR="/media/developer/persist"
 AUTH_KEYS="/media/developer/.ssh/authorized_keys"
 WRAPPER="$PERSIST_DIR/ssh_wrapper.sh"
+JAIL_CONF="/media/developer/jail_app.conf"
 
 echo "=== LG webOS persistent root installer ==="
 
@@ -19,7 +20,7 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # verify binaries exist
-for bin in towelroot rootsh dotrigger ssh_wrapper.sh; do
+for bin in towelroot rootsh dotrigger ssh_wrapper.sh autoroot-boot.sh boot-root.sh; do
     if [ ! -f "$PERSIST_DIR/$bin" ]; then
         echo "[-] Missing $PERSIST_DIR/$bin"
         exit 1
@@ -27,7 +28,7 @@ for bin in towelroot rootsh dotrigger ssh_wrapper.sh; do
 done
 
 chmod 755 "$PERSIST_DIR/towelroot" "$PERSIST_DIR/rootsh" "$PERSIST_DIR/dotrigger"
-chmod 755 "$PERSIST_DIR/ssh_wrapper.sh"
+chmod 755 "$PERSIST_DIR/ssh_wrapper.sh" "$PERSIST_DIR/autoroot-boot.sh" "$PERSIST_DIR/boot-root.sh"
 
 echo "[+] Binaries verified in $PERSIST_DIR"
 
@@ -82,55 +83,40 @@ echo "$PUBKEY" > /home/root/.ssh/authorized_keys
 chmod 644 /home/root/.ssh/authorized_keys
 echo "[+] Root authorized_keys installed"
 
-# Patch start-devmode.sh to run autoroot + root sshd at boot
-DEVMODE_SCRIPT="/media/cryptofs/apps/usr/palm/services/com.palmdts.devmode.service/start-devmode.sh"
-if [ -f "$DEVMODE_SCRIPT" ]; then
-    if grep -q "boot-root" "$DEVMODE_SCRIPT"; then
-        echo "[*] start-devmode.sh already patched"
-    elif grep -q "^# === AUTOROOT" "$DEVMODE_SCRIPT"; then
-        echo "[*] start-devmode.sh has AUTOROOT block, updating..."
-        sed -i "/^# === AUTOROOT/,/^# === END AUTOROOT/c\\
-# === AUTOROOT: run towelroot exploit at boot ===\\
-if [ -x /media/developer/persist/towelroot ] && [ ! -f /tmp/rooted ]; then\\
-    (\\
-        cp /media/developer/persist/rootsh /tmp/rootsh\\
-        chmod 755 /tmp/rootsh\\
-        cp /media/developer/persist/dotrigger /tmp/dotrigger\\
-        chmod 755 /tmp/dotrigger\\
-        /media/developer/persist/towelroot > /tmp/autoroot.log 2>\&1 \&\\
-    ) \&\\
-    /media/developer/persist/boot-root.sh \&\\
-fi\\
-# === END AUTOROOT ===" "$DEVMODE_SCRIPT"
-        echo "[+] start-devmode.sh patched with autoroot + root sshd"
-    else
-        echo "[*] Injecting AUTOROOT block into start-devmode.sh..."
-        cp "$DEVMODE_SCRIPT" "$DEVMODE_SCRIPT.bak"
-        sed -i '/^export LD_LIBRARY_PATH=/a\
-\
-# === AUTOROOT: run towelroot exploit at boot ===\
-if [ -x /media/developer/persist/towelroot ] && [ ! -f /tmp/rooted ]; then\
-    (\
-        cp /media/developer/persist/rootsh /tmp/rootsh\
-        chmod 755 /tmp/rootsh\
-        cp /media/developer/persist/dotrigger /tmp/dotrigger\
-        chmod 755 /tmp/dotrigger\
-        /media/developer/persist/towelroot > /tmp/autoroot.log 2>\&1 \&\
-    ) \&\
-    /media/developer/persist/boot-root.sh \&\
-fi\
-# === END AUTOROOT ===' "$DEVMODE_SCRIPT"
-        echo "[+] start-devmode.sh patched (backup at .bak)"
-    fi
+# --- Boot persistence via jail_app.conf ---
+#
+# The devmode service runs inside a jail. At boot, start-devmode.sh copies a
+# clean jail_app.conf template from the jail's download/ directory, overwriting
+# any edits. But the jailer reads jail_app.conf BEFORE that copy happens, and
+# its "system" commands run on the host as root during jail setup.
+#
+# autoroot-boot.sh runs the exploit and starts root sshd, then re-patches
+# jail_app.conf after start-devmode.sh overwrites it — creating a
+# self-sustaining cycle across reboots.
+
+MARKER="autoroot-boot"
+echo "[*] Patching jail_app.conf for boot-time autoroot..."
+
+if [ ! -f "$JAIL_CONF" ]; then
+    echo "[-] jail_app.conf not found at $JAIL_CONF"
+    echo "[-] Boot persistence not installed. Use SSH fallback (prisoner SSH triggers root)."
 else
-    echo "[-] start-devmode.sh not found, skipping boot hook"
+    if grep -q "$MARKER" "$JAIL_CONF"; then
+        echo "[*] jail_app.conf already patched"
+    else
+        sed -i "/^include jail_device.conf/a\\
+\\
+# === AUTOROOT ===\\
+system sh /media/developer/persist/$MARKER.sh \\&" "$JAIL_CONF"
+        echo "[+] jail_app.conf patched"
+    fi
 fi
 
 echo
 echo "=== Installation complete ==="
 echo
 echo "Root persistence:"
-echo "  - Exploit runs automatically at boot via start-devmode.sh"
+echo "  - Exploit runs automatically at boot via jail_app.conf system command"
 echo "  - Root SSH available on port 22 (~30-60s after boot)"
 echo "  - Fallback: exploit also runs on prisoner SSH connect"
 echo

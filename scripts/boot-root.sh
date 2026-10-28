@@ -1,6 +1,6 @@
 #!/bin/sh
 # Start a root SSH server on port 22 after towelroot achieves root.
-# Runs as a background process launched from start-devmode.sh at boot.
+# Runs as a background process launched from autoroot-boot.sh at boot.
 # Waits for /tmp/rooted (created by towelroot), then starts sshd.
 
 HOSTKEY=/media/developer/persist/ssh_host_rsa_key
@@ -39,4 +39,10 @@ if ! netstat -tln 2>/dev/null | grep -q ":22 "; then
     echo "boot-root: sshd started on port 22" >> $LOG
 else
     echo "boot-root: sshd already running" >> $LOG
+fi
+
+# Start RPiPlay if available
+if [ -x /media/developer/persist/rpiplay-start.sh ]; then
+    /media/developer/persist/rpiplay-start.sh &
+    echo "boot-root: rpiplay-start.sh launched" >> $LOG
 fi
